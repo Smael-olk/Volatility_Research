@@ -1,36 +1,45 @@
 function total_error = Calibration_Objective(params, data)
-    % params = [sigma, eta, k]
-    
+%CALIBRATION_OBJECTIVE Fast NIG Calibration (No Regularization).
+%   INPUTS: params, data
+%   Handles Call/Put/Mixed data automatically based on flags.
+
     total_error = 0;
-    penalty_weight = 1000; % penalty for arbitrage
     
-    % Loop through Maturities (if data has multiple)
-    for i = 1:length(data{1})
+    % Loop through Maturities
+    for i = 1:size(data, 1)
         F0 = data{i,3};
         B  = data{i,2};
         Dt = data{i,1};
-        Strikes = data{i,5};
-        MarketPrices = data{i,4}; % market peices
+        MarketPrices = data{i,4};
+        Strikes      = data{i,5};
+        Flags        = data{i,9}; % 1=Call, 2=Put
         
-        ModelPrices = NIG_Pricer(params, F0, Strikes, B, Dt);
+        if isempty(MarketPrices), continue; end
         
-        % Nan handle
-        if any(isnan(ModelPrices))
-            total_error = 1e10; 
-            return;
+        % --- FAST PRICING (Single FFT) ---
+        % 1. Price everything as if it were a CALL.
+        % This is efficient because FFT depends on Params+Time, not Strike/Type.
+        AllAsCalls = NIG_Pricer(params, F0, Strikes, B, Dt, 1);
+        
+        % Safety Check
+        if any(isnan(AllAsCalls)) || ~isreal(AllAsCalls)
+            total_error = 1e10; return;
         end
+
+        ModelPrices = AllAsCalls;
         
-        % MSE
+        % 2. Convert actual Puts using Parity
+        idx_P = (Flags == 2);
+        if any(idx_P)
+             % Put = Call - B*(F - K)
+             ModelPrices(idx_P) = AllAsCalls(idx_P) - B * (F0 - Strikes(idx_P));
+             
+             % Floor negative prices (numerical noise)
+             ModelPrices(idx_P) = max(0, ModelPrices(idx_P));
+        end
+
+        % --- ERROR CALCULATION ---
         sq_error = sum((MarketPrices - ModelPrices).^2);
-        
-        % 3. ARBITRAGE PENALTY (Butterfly Check)
-        if length(ModelPrices) > 2
-            Butterfly = ModelPrices(1:end-2) - 2*ModelPrices(2:end-1) + ModelPrices(3:end);
-            
-            if any(Butterfly < -1e-6) % If negative probability detected
-                sq_error = sq_error + penalty_weight;
-            end
-        end
         
         total_error = total_error + sq_error;
     end

@@ -1,7 +1,8 @@
 function [s] = vol_surface_plot(data, target_ax, now, Spot)
 %VOL_SURFACE_PLOT Plots the interpolated Implied Volatility Surface onto specified axes
 %   and marks the current Spot Price (T=0) with a projection line to the surface.
-
+    h_fig = gcf;
+    set(h_fig, 'InvertHardcopy', 'off');
     % --- 1. Data Aggregation (unchanged) ---
     all_K = [];
     all_T = [];

@@ -20,10 +20,18 @@ addpath("Lewis\")
 filelist = dir('.\Dati_Train\*.csv');
 numFiles = length(filelist);
 spot_file_name = 'spot_SPX_hist.csv';
-%% Question a : Term Structure on 08 Dec 2017
 
-[discounts,forward_prices,expiries,TradeDate,Spot,Option_data]=IR_curves('2017-12-08',spot_file_name); % Discounts and Forward Calibration function
-T_years = years(expiries - TradeDate);
+%% Question a : Term Structure on 08 Dec 2017
+target_date = '2017-12-08';
+% Find the specific file for this date
+file_match = dir(fullfile('Dati_Train', ['*' target_date '*.csv']));
+
+if isempty(file_match)
+    error('File for date %s not found.', target_date);
+end
+full_path = fullfile(file_match(1).folder, file_match(1).name);
+% Call IR_curves with the actual file path
+[discounts,forward_prices,expiries,TradeDate,Spot,Option_data] = IR_curves(full_path, spot_file_name);T_years = years(expiries - TradeDate);
 R_years = -log(discounts(:)') ./ T_years(:)';
 % Plotting
 plot_term_struct(discounts,R_years,forward_prices,TradeDate,Spot,T_years)
@@ -33,13 +41,13 @@ plot_term_struct(discounts,R_years,forward_prices,TradeDate,Spot,T_years)
 
 %% Market Data 
 
-marketdata = cell(length(Option_data.datesExpiry), 8);
+marketdata_08 = cell(length(Option_data.datesExpiry), 8);
 for i=1:length(Option_data.datesExpiry)
-    marketdata{i,1} = T_years(i);
-    marketdata{i,2} = discounts(i);
-    marketdata{i,3} = forward_prices(i);
-    marketdata{i,4} = (Option_data.callAsk(i).prices + Option_data.callBid(i).prices ) / 2; % observed market prices
-    marketdata{i,5} = Option_data.strikes(i).value;
+    marketdata_08{i,1} = T_years(i);
+    marketdata_08{i,2} = discounts(i);
+    marketdata_08{i,3} = forward_prices(i);
+    marketdata_08{i,4} = (Option_data.callAsk(i).prices + Option_data.callBid(i).prices ) / 2; % observed market prices
+    marketdata_08{i,5} = Option_data.strikes(i).value;
 end
 
 %%
@@ -62,80 +70,181 @@ fig = figure('Name', ' Black76 Market Implied Volatility Surface', 'Position', [
 main_ax = axes('Parent', fig); % Axes handle for plotting
 vol_surface_black(marketdata,main_ax,TradeDate,Spot);
 %% Question b : Volatility Surface 08-Dec-2017
-% --- 2. Initial Guess ---
-% [sigma, eta, k]
-% Start with "safe" parameters that usually imply a valid PDF
-x0 = [0.2, -0.5, 0.5];
-% --- 3. Optimization Settings ---
+
+
+% 1. Configuration & Path Setup
+addpath(genpath('Code'));       % Ensure your functions are visible
+addpath('Dati_Train');          % Ensure data folder is visible
+
+data_folder     = '.\Dati_Train';
+spot_file_name  = 'spot_SPX_hist.csv'; 
+target_date     = '2017-12-08'; 
+
+% Mode: 'Call', 'Put', or 'Both'. 'Both' is best for fixing Skew/Eta.
+CalibMode = 'Put'; 
+
+% 2. Locate Target File
+filelist = dir(fullfile(data_folder, ['*' target_date '*.csv']));
+
+if isempty(filelist)
+    error('No option file found for date %s in %s', target_date, data_folder);
+end
+
+% Construct full path for IR_curves
+current_file_path = fullfile(filelist(1).folder, filelist(1).name);
+fprintf('Processing target file: %s\n', filelist(1).name);
+
+% 3. Load Market Data (IR Curves & Options)
+[discounts, fwd, expiries, TradeDate, Spot, Option_data] = IR_curves(current_file_path, spot_file_name);
+T_years = years(expiries - TradeDate);
+
+if isempty(T_years)
+    error('Data loaded but T_years is empty.');
+end
+
+% Initialize marketdata_08 cell (9 columns for hybrid logic)
+marketdata_08 = cell(length(Option_data.datesExpiry), 9); 
+
+% 4. Data Preparation & ATM Filtering
+fprintf('Applying ATM Delta Filter (0.40 - 0.60)...\n');
+
+for i = 1:length(Option_data.datesExpiry)
+    
+    Dt = T_years(i);
+    B = discounts(i);
+    F0 = fwd(i);
+    
+    if Dt <= 0, continue; end
+    
+    % --- Extract Raw Data (Force Columns) ---
+    RawStrikes = Option_data.strikes(i).value(:);
+    RawCallPrices = (Option_data.callAsk(i).prices(:) + Option_data.callBid(i).prices(:))/2;
+    RawPutPrices  = (Option_data.putAsk(i).prices(:)  + Option_data.putBid(i).prices(:))/2;
+    
+    % --- Calculate Deltas (Black-76 Proxy) ---
+    sigma_proxy = 0.20;
+    d1 = (log(F0 ./ RawStrikes) + (sigma_proxy^2/2)*Dt) / (sigma_proxy*sqrt(Dt));
+    
+    Delta_Calls = B * normcdf(d1);
+    Delta_Puts  = Delta_Calls - B; 
+    
+    % --- Apply ATM Filter ---
+    % Keep Calls where Delta is 0.40 to 0.60
+    idx_calls = find(Delta_Calls >= 0.40 & Delta_Calls <= 0.60);
+    
+    % Keep Puts where |Delta| is 0.40 to 0.60
+    idx_puts  = find(abs(Delta_Puts) >= 0.40 & abs(Delta_Puts) <= 0.60);
+    
+    % --- Combine Data Based on Mode ---
+    switch CalibMode
+        case 'Call'
+            MixedStrikes = RawStrikes(idx_calls);
+            MixedPrices  = RawCallPrices(idx_calls);
+            TypeFlags    = ones(length(idx_calls), 1); % 1=Call
+            
+        case 'Put'
+            MixedStrikes = RawStrikes(idx_puts);
+            MixedPrices  = RawPutPrices(idx_puts);
+            TypeFlags    = 2 * ones(length(idx_puts), 1); % 2=Put
+            
+        case 'Both'
+            MixedStrikes = [RawStrikes(idx_calls); RawStrikes(idx_puts)];
+            MixedPrices  = [RawCallPrices(idx_calls); RawPutPrices(idx_puts)];
+            TypeFlags    = [ones(length(idx_calls), 1); 2 * ones(length(idx_puts), 1)];
+    end
+    
+    % --- Store in Cell Array ---
+    marketdata_08{i,1} = Dt; 
+    marketdata_08{i,2} = B; 
+    marketdata_08{i,3} = F0; 
+    marketdata_08{i,4} = MixedPrices; 
+    marketdata_08{i,5} = MixedStrikes;
+    marketdata_08{i,9} = TypeFlags; % Flag column for Objective Function
+end
+
+% 5. Optimization
+x0 = [0.2, -0.5, 0.5]; % Initial Guess [sigma, eta, k]
 options = optimset('Display', 'iter', 'TolFun', 1e-4, 'MaxFunEvals', 1000);
-% --- 4. Run Optimization ---
-disp('Starting Calibration...');
-[optimal_params, fval] = fminsearch(@(x) Calibration_Objective(x, marketdata), x0, options);
-% --- 5. Display Results ---
+
+fprintf('Starting Calibration (%s Mode)...\n', CalibMode);
+
+% Pass marketdata_08 to objective (No regularization needed for single day)
+objective_function = @(x) Calibration_Objective(x, marketdata_08);
+
+[optimal_params, fval] = fminsearch(objective_function, x0, options);
+
+% 6. Display & Save Results
 sigma_opt = optimal_params(1);
 eta_opt   = optimal_params(2);
 k_opt     = optimal_params(3);
 
 disp('-----------------------------');
+disp(['Results for ' datestr(TradeDate)]);
+disp(['Spot Price:       ' num2str(Spot)]);
 disp(['Calibrated Sigma: ' num2str(sigma_opt)]);
 disp(['Calibrated Eta:   ' num2str(eta_opt)]);
 disp(['Calibrated k:     ' num2str(k_opt)]);
-disp(['Total Error:     ' num2str(fval)]);
+disp(['Total Error:      ' num2str(fval)]);
+disp('-----------------------------');
+% --- 7. REGENERATE DENSE GRID FOR PLOTTING ---
+% The filtered marketdata_08 has very few points (only ATM). 
+% We need to generate a dense grid using the calibrated parameters to plot a surface.
 
+fprintf('Regenerating dense surface data for plotting...\n');
 
-for i=1:length(Option_data.datesExpiry)
-    F0= marketdata{i,3};
-    B = marketdata{i,2};
-    Strikes = marketdata{i,5};
-    Dt=marketdata{i,1};
-    marketdata{i,6} = NIG_Pricer(optimal_params, F0, Strikes, B, Dt);
-end
-
-arbitrage_check(marketdata,optimal_params);
-
-sigma = 0.2; % Initial guess (often 0.2 to 0.4 works well)
-tol = 1e-6;
+% Settings for Inverse Black-76
+tol = 1e-6; 
 max_iter = 200;
-for i=1:length(Option_data.datesExpiry)
-    iv= [];
-    Dt = marketdata{i,1};
-    B= marketdata{i,2};
-    F= marketdata{i,3};
-    K_market = marketdata{i,5};
 
-    num_points = 20;
-    K_min = 2300 ;
-    K_max = 2800 ;
-    K_dense = linspace(K_min, K_max, num_points);
-    marketdata{i,8}=K_dense;
-    C=NIG_Pricer(optimal_params, F0, K_dense, B, Dt);
-    for j=1:length(C)
-        iv(j)= Black76Inverse(C(j), F, K_dense(j), B, Dt, tol, max_iter);
+for i = 1:length(Option_data.datesExpiry)
+    Dt = marketdata_08{i,1};
+    B  = marketdata_08{i,2};
+    F0 = marketdata_08{i,3};
+    
+    if isempty(Dt) || Dt <= 0
+        continue;
     end
-    marketdata{i,7} = iv;
+    
+    % 1. Create a Dense Strike Grid (e.g., 30 points from 70% to 130% of Spot)
+    % This ensures linspace inside vol_surface_plot receives a valid vector.
+    K_dense = linspace(Spot*0.95, Spot*1.05, 30); 
+    
+    % 2. Calculate Model Prices (Calls) on this grid
+    % We use the calibrated parameters 'optimal_params'
+    C_model = NIG_Pricer(optimal_params, F0, K_dense, B, Dt, 1);
+    
+    % 3. Invert to get Model Implied Volatilities
+    iv_model = zeros(size(C_model));
+    for k = 1:length(C_model)
+        iv_model(k) = Black76Inverse(C_model(k), F0, K_dense(k), B, Dt, tol, max_iter);
+    end
+    
+    % 4. Store in columns 7 (IV) and 8 (Strikes) as expected by vol_surface_plot
+    marketdata_08{i, 7} = iv_model; 
+    marketdata_08{i, 8} = K_dense;
 end
-fig = figure('Name', 'NIG Implied Volatility Surface', 'Position', [100 100 1200 600]);
-main_ax = axes('Parent', fig); % Axes handle for plotting
+%%
 
-vol_surface_plot(marketdata,main_ax,TradeDate,Spot);
+% --- 8. PLOTTING ---
+fig = figure('Name', 'NIG Calibrated Volatility Surface', 'Position', [100 100 1200 600]);
+main_ax = axes('Parent', fig); 
+% Now this will work because Columns 7 and 8 are populated with dense data
+vol_surface_plot(marketdata_08, main_ax, TradeDate, Spot);
+
 %%
 run_calibration();
 
 %% Vol Surface Animation
-vol_surface_evo()
+vol_surface_evo();
 
 %%
 NIG_params = load("CalibratedParams.mat");
 plot_nig_parameter_evo()
 
 
-
-
-
-
 %% Question c : Simulation 
 
-%% 2. Model & Grid Parameters
+% 2. Model & Grid Parameters
 % FFT grid parameter (dz)
 param = 0.01; 
 N_sim=10^7;
@@ -243,3 +352,148 @@ legend('Discretization (Theory, FFT)', 'Truncation (Theory, FFT)', 'Actual Max M
 title('MC Simulation Error vs. Theoretical FFT Bounds');
 ylim([-10, 10]);
 grid on;
+
+
+
+%%
+% --- 2. Product Specifications ---
+Notional    = 15e6; % 15 Million USD
+S0          = Spot;
+Strike      = 1.00 * S0;
+Barrier     = 0.90 * S0; % 90%
+Trigger     = 1.20 * S0; % 120%
+Protection  = 0;
+Factor      = 0.90;
+
+% Dates
+ValuationDate = datetime('08-Dec-2017');
+FinalDate     = datetime('09-Dec-2019');
+
+% Autocall Observation Dates
+ObsDates = [datetime('09-Apr-2018'); ...
+            datetime('08-Aug-2018'); ...
+            datetime('10-Dec-2018'); ...
+            datetime('08-Apr-2019'); ...
+            datetime('08-Aug-2019'); ...
+            datetime('09-Dec-2019')]; % 6th date is Final
+
+% Liquidation Prices (Percentages)
+LiqPercs = [1.02; 1.03; 1.05; 1.10; 1.15; 1.20];
+
+% --- 3. Simulation Setup ---
+% Estimating r and q
+% r: Interpolate zero rate for the product maturity (2 years)
+T_final = years(FinalDate - ValuationDate);
+% Simple interp from your loaded 'discounts' and 'T_years' vectors
+r_riskfree = interp1(T_years, -log(discounts)./T_years, T_final, 'linear', 'extrap');
+
+% q: Dividend Yield. 
+% Calibrated Forward F = S0 * exp((r-q)T)  => q = r - ln(F/S0)/T
+% We use the 2-year forward from calibration to imply q
+F_2y = interp1(T_years, fwd, T_final, 'linear', 'extrap');
+q_div = r_riskfree - log(F_2y / S0) / T_final;
+
+fprintf('Pricing Parameters:\n r = %.4f%%\n q = %.4f%%\n', r_riskfree*100, q_div*100);
+
+% Simulation Grid
+N_sim = 100000; % 100k simulations
+N_days = days(FinalDate - ValuationDate); % Daily steps
+
+fprintf('Simulating %d paths with %d daily steps...\n', N_sim, N_days);
+
+% --- 4. Run Simulation ---
+% Note: NIG_Simulate must be in your path
+tic;
+[S_paths, TimeGrid] = NIG_Simulate(optimal_params, S0, r_riskfree, q_div, T_final, N_days, N_sim);
+toc;
+
+%--- 5. Payoff Logic ---
+
+Payoffs = zeros(N_sim, 1);
+DiscountFactors = zeros(N_sim, 1);
+
+% Map Observation Dates to Path Indices (Days)
+ObsIndices = days(ObsDates - ValuationDate); 
+% Ensure indices don't exceed path length (numerical safety)
+ObsIndices = min(ObsIndices, size(S_paths, 2)-1); 
+
+for i = 1:N_sim
+    Path = S_paths(i, :);
+    
+    % A. Check Barrier (Continuous / Daily)
+    % "Barrier Event" = Reference Value < Trigger AND Below Barrier? 
+    % Actually Term sheet says: "Barrier Event has occurred" usually means 
+    % touching the barrier level (90%) at ANY time.
+    % We check if the path ever dropped below 90%.
+    BarrierHit = any(Path < Barrier);
+    
+    % B. Check Autocall (Dates 1 to 5)
+    IsAutocalled = false;
+    
+    for k = 1:5 
+        % Check Spot on Observation Date
+        % Index + 1 because Path includes t=0
+        S_obs = Path(ObsIndices(k) + 1);
+        
+        if S_obs >= Trigger
+            % Autocall Triggered
+            Payoffs(i) = LiqPercs(k) * Notional;
+            
+            % Discount from THIS date
+            T_pay = years(ObsDates(k) - ValuationDate);
+            DiscountFactors(i) = exp(-r_riskfree * T_pay);
+            
+            IsAutocalled = true;
+            break; 
+        end
+    end
+    
+    if IsAutocalled
+        continue; % Done with this path
+    end
+    
+    % C. Final Maturity (Date 6)
+    S_final = Path(end);
+    T_pay = T_final;
+    DiscountFactors(i) = exp(-r_riskfree * T_pay);
+    
+    % Apply Complex Logic from Term Sheet
+    if S_final >= Trigger
+        % Scenario: Above Trigger (120%) at Maturity
+        if BarrierHit
+            % "Reference Value above Trigger Level AND Barrier Event has occurred"
+            Payoffs(i) = 1.10 * Notional;
+        else
+            % "Reference Value above Trigger Level" (Implies No Barrier based on context)
+            % (Liquidation price + Additional final amount)
+            % Liq Price #6 is 120%. Additional is 23%.
+            Payoffs(i) = (1.20 + 0.23) * Notional;
+        end
+        
+    else % S_final < Trigger
+        if ~BarrierHit
+            % "Below Trigger AND Barrier Event has NOT occurred"
+            % Pay Liquidation Price (120%)
+            Payoffs(i) = 1.20 * Notional;
+        else
+            % "Below Trigger AND Barrier Event HAS occurred"
+            % Max(Protection, Factor * (S / Strike))
+            % Protection = 0%, Factor = 90%
+            Val = Factor * (S_final / Strike);
+            Payoffs(i) = max(Protection, Val) * Notional;
+        end
+    end
+end
+
+% --- 6. Calculate Price ---
+PV = Payoffs .* DiscountFactors;
+Price = mean(PV);
+StdErr = std(PV) / sqrt(N_sim);
+
+fprintf('\n--------------------------------------\n');
+fprintf('MIAMI CROCODILE CERTIFICATE PRICE\n');
+fprintf('--------------------------------------\n');
+fprintf('Price:       $ %.2f\n', Price);
+fprintf('%% of Notional: %.2f %%\n', (Price/Notional)*100);
+fprintf('Std Error:   $ %.2f\n', StdErr);
+fprintf('--------------------------------------\n');
