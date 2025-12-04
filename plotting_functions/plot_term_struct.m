@@ -38,6 +38,6 @@ function plot_term_struct(discounts,R_years,forward_prices,TradeDate,Spot,T_year
     
     axis([0 max(T_years)+0.5 Spot-10 Spot+100]); 
     ylim([Spot*0.95,Spot*1.05])
-    saveas(gcf, "2017dec08", 'png');
+    saveas(gcf, "./Plots/Yield2017dec08", 'png');
 end
 

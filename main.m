@@ -14,6 +14,8 @@ clear h_subfolders;
 addpath("Dati_Train");
 addpath("Plots\");
 addpath("Lewis\")
+addpath("plotting_functions\")
+addpath("params\")
 
 
 %% load data
@@ -254,7 +256,7 @@ run_calibration();
 vol_surface_evo();
 
 %%
-NIG_params = load("CalibratedParams.mat");
+NIG_params = load("./paramsCalibratedParams.mat");
 plot_nig_parameter_evo()
 
 
@@ -373,17 +375,18 @@ grid on;
 %% PRICE_MIAMI_CERTIFICATE.m
 
 % --- 1. Load Data & Calibration ---
-if isfile('NIG_Params_20171208.mat')
-    load('NIG_Params_20171208.mat'); 
+if isfile('./params/NIG_Params_20171208.mat')
+    load('./params/NIG_Params_20171208.mat'); 
 else
     error('Calibration file not found.');
 end
 
 
-
+S0 = Spot;
 % Dates
+FinalDate = datetime('09-Dec-2019');
 ValuationDate = datetime('08-Dec-2017');
-
+Notional = 15e6;
 % --- 3. Simulation Setup ---
 T_final = years(FinalDate - ValuationDate);
 r_riskfree = interp1(T_years, -log(discounts)./T_years, T_final, 'spline', 'extrap');
@@ -392,18 +395,19 @@ q_div = r_riskfree - log(F_2y / S0) / T_final;
 
 fprintf('Pricing Parameters:\n r = %.4f%%\n q = %.4f%%\n', r_riskfree*100, q_div*100);
 
-fprintf('Simulating %d paths with %d daily steps...\n', N_sim, N_days);
 
 % Call the function using the variables returned by your calibration step
-[Price_Cert, StdErr] = Price_Miami_Certificate_Function(optimal_params, S0, r, q, ValuationDate);
+[Price_Cert, StdErr] = Price_Miami_Certificate_Function(optimal_params, S0, r_riskfree, q_div, ValuationDate);
 
+% Display
 fprintf('\n--------------------------------------\n');
 fprintf('MIAMI CROCODILE CERTIFICATE PRICE (DISCRETE BARRIER)\n');
 fprintf('--------------------------------------\n');
-fprintf('Price:       $ %.2f\n', Price);
-fprintf('%% of Notional: %.2f %%\n', (Price/Notional)*100);
+fprintf('Price:       $ %.2f\n', Price_Cert);
+fprintf('%% of Notional: %.2f %%\n', (Price_Cert/Notional)*100);
 fprintf('Std Error:   $ %.2f\n', StdErr);
 fprintf('--------------------------------------\n');
+
 
 
 %% RUN_BACKTEST_STRATEGY.m
@@ -542,8 +546,6 @@ fprintf('Metric (Mean Squared P&L): %.2f\n', Metric);
 fprintf('Root Mean Square Error:    $ %.2f\n', sqrt(Metric));
 fprintf('========================================\n');
 
-
-%% --- PLOTTING P&L EVOLUTION ---
 %% --- PLOTTING P&L EVOLUTION (BLOOMBERG STYLE) ---
 
 % 1. Prepare Data

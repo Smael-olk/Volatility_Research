@@ -23,7 +23,7 @@ function vol_surface_evo()
     main_ax = axes('Parent', main_fig); % Axes handle for plotting
     
     % --- HIGH QUALITY VIDEO WRITER SETUP ---
-    v = VideoWriter('vol_surface_Animation_HQ.avi', 'Motion JPEG AVI'); 
+    v = VideoWriter('./Plots/vol_surface_Animation_HQ.avi', 'Motion JPEG AVI'); 
     v.Quality = 99; % High quality
     v.FrameRate = 4; % 4 frames per second
     open(v);

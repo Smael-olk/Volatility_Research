@@ -16,7 +16,7 @@ function  term_structure_evo()
     
     
     figure('Name', 'Dynamic Term Structure', 'Position', [100 100 1200 600]);
-    v = VideoWriter('Term_Structure_Animation.avi');
+    v = VideoWriter('./Plots/Term_Structure_Animation.avi');
     v.FrameRate = 7; 
     open(v);
     for j = 1:numFiles

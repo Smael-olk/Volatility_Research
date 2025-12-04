@@ -103,6 +103,6 @@ function run_calibration()
     end
     
     % --- 3. Save to Disk ---
-    save('CalibratedParams.mat', 'Results');
+    save('./params/CalibratedParams.mat', 'Results');
     disp('Calibration complete.');
 end
