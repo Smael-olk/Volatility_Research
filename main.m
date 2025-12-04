@@ -56,19 +56,19 @@ tol = 1e-6;
 max_iter = 100;
 for i=1:length(Option_data.datesExpiry)
     iv= [];
-    for j=1:length(marketdata{i,4})
-        T = marketdata{i,1};
-        B= marketdata{i,2};
-        F= marketdata{i,3};
-        C_target = marketdata{i,4}(j);
-        K = marketdata{i,5}(j);
+    for j=1:length(marketdata_08{i,4})
+        T = marketdata_08{i,1};
+        B= marketdata_08{i,2};
+        F= marketdata_08{i,3};
+        C_target = marketdata_08{i,4}(j);
+        K = marketdata_08{i,5}(j);
         iv(j)= Black76Inverse(C_target, F, K, B, T, tol, max_iter);
     end
-    marketdata{i,6} = iv;
+    marketdata_08{i,6} = iv;
 end
 fig = figure('Name', ' Black76 Market Implied Volatility Surface', 'Position', [100 100 1200 600]);
 main_ax = axes('Parent', fig); % Axes handle for plotting
-vol_surface_black(marketdata,main_ax,TradeDate,Spot);
+vol_surface_black(marketdata_08,main_ax,TradeDate,Spot);
 %% Question b : Volatility Surface 08-Dec-2017
 
 
@@ -130,10 +130,10 @@ for i = 1:length(Option_data.datesExpiry)
     
     % --- Apply ATM Filter ---
     % Keep Calls where Delta is 0.40 to 0.60
-    idx_calls = find(Delta_Calls >= 0.40 & Delta_Calls <= 0.60);
+    idx_calls = find(Delta_Calls >= 0.10 & Delta_Calls <= 0.90);
     
     % Keep Puts where |Delta| is 0.40 to 0.60
-    idx_puts  = find(abs(Delta_Puts) >= 0.40 & abs(Delta_Puts) <= 0.60);
+    idx_puts  = find(abs(Delta_Puts) >= 0.10 & abs(Delta_Puts) <= 0.90);
     
     % --- Combine Data Based on Mode ---
     switch CalibMode
@@ -163,15 +163,29 @@ for i = 1:length(Option_data.datesExpiry)
 end
 
 % 5. Optimization
-x0 = [0.2, -0.5, 0.5]; % Initial Guess [sigma, eta, k]
-options = optimset('Display', 'iter', 'TolFun', 1e-4, 'MaxFunEvals', 1000);
+x0 = [0.15, -1.0, 1.0]; 
 
 fprintf('Starting Calibration (%s Mode)...\n', CalibMode);
 
-% Pass marketdata_08 to objective (No regularization needed for single day)
+% Define Objective Function
 objective_function = @(x) Calibration_Objective(x, marketdata_08);
 
-[optimal_params, fval] = fminsearch(objective_function, x0, options);
+% --- CONSTRAINTS ---
+% Format: [sigma, eta, k]
+% Lower Bounds: sigma > 1%, eta can be large negative, k > 0
+lb = [0.01, -5.0, 0.01]; 
+
+% Upper Bounds: sigma < 100%, ETA MUST BE NEGATIVE (<= -0.01), k < 5
+ub = [1.0, -0.01, 5.0]; 
+
+% Setup fmincon options
+options = optimoptions('fmincon', 'Display', 'iter', ...
+    'Algorithm', 'sqp', ... % SQP is often robust for this
+    'DiffMinChange', 1e-4, ...
+    'MaxFunctionEvaluations', 3000);
+
+% Run Constrained Optimization
+[optimal_params, fval] = fmincon(objective_function, x0, [],[],[],[], lb, ub, [], options);
 
 % 6. Display & Save Results
 sigma_opt = optimal_params(1);
@@ -186,6 +200,8 @@ disp(['Calibrated Eta:   ' num2str(eta_opt)]);
 disp(['Calibrated k:     ' num2str(k_opt)]);
 disp(['Total Error:      ' num2str(fval)]);
 disp('-----------------------------');
+
+%%
 % --- 7. REGENERATE DENSE GRID FOR PLOTTING ---
 % The filtered marketdata_08 has very few points (only ATM). 
 % We need to generate a dense grid using the calibrated parameters to plot a surface.
@@ -223,7 +239,7 @@ for i = 1:length(Option_data.datesExpiry)
     marketdata_08{i, 7} = iv_model; 
     marketdata_08{i, 8} = K_dense;
 end
-%%
+
 
 % --- 8. PLOTTING ---
 fig = figure('Name', 'NIG Calibrated Volatility Surface', 'Position', [100 100 1200 600]);
@@ -354,146 +370,255 @@ ylim([-10, 10]);
 grid on;
 
 
+%% PRICE_MIAMI_CERTIFICATE.m
 
-%%
-% --- 2. Product Specifications ---
-Notional    = 15e6; % 15 Million USD
-S0          = Spot;
-Strike      = 1.00 * S0;
-Barrier     = 0.90 * S0; % 90%
-Trigger     = 1.20 * S0; % 120%
-Protection  = 0;
-Factor      = 0.90;
+% --- 1. Load Data & Calibration ---
+if isfile('NIG_Params_20171208.mat')
+    load('NIG_Params_20171208.mat'); 
+else
+    error('Calibration file not found.');
+end
+
+
 
 % Dates
 ValuationDate = datetime('08-Dec-2017');
-FinalDate     = datetime('09-Dec-2019');
-
-% Autocall Observation Dates
-ObsDates = [datetime('09-Apr-2018'); ...
-            datetime('08-Aug-2018'); ...
-            datetime('10-Dec-2018'); ...
-            datetime('08-Apr-2019'); ...
-            datetime('08-Aug-2019'); ...
-            datetime('09-Dec-2019')]; % 6th date is Final
-
-% Liquidation Prices (Percentages)
-LiqPercs = [1.02; 1.03; 1.05; 1.10; 1.15; 1.20];
 
 % --- 3. Simulation Setup ---
-% Estimating r and q
-% r: Interpolate zero rate for the product maturity (2 years)
 T_final = years(FinalDate - ValuationDate);
-% Simple interp from your loaded 'discounts' and 'T_years' vectors
-r_riskfree = interp1(T_years, -log(discounts)./T_years, T_final, 'linear', 'extrap');
-
-% q: Dividend Yield. 
-% Calibrated Forward F = S0 * exp((r-q)T)  => q = r - ln(F/S0)/T
-% We use the 2-year forward from calibration to imply q
-F_2y = interp1(T_years, fwd, T_final, 'linear', 'extrap');
+r_riskfree = interp1(T_years, -log(discounts)./T_years, T_final, 'spline', 'extrap');
+F_2y = interp1(T_years, fwd, T_final, 'spline', 'extrap');
 q_div = r_riskfree - log(F_2y / S0) / T_final;
 
 fprintf('Pricing Parameters:\n r = %.4f%%\n q = %.4f%%\n', r_riskfree*100, q_div*100);
 
-% Simulation Grid
-N_sim = 100000; % 100k simulations
-N_days = days(FinalDate - ValuationDate); % Daily steps
-
 fprintf('Simulating %d paths with %d daily steps...\n', N_sim, N_days);
 
-% --- 4. Run Simulation ---
-% Note: NIG_Simulate must be in your path
-tic;
-[S_paths, TimeGrid] = NIG_Simulate(optimal_params, S0, r_riskfree, q_div, T_final, N_days, N_sim);
-toc;
-
-%--- 5. Payoff Logic ---
-
-Payoffs = zeros(N_sim, 1);
-DiscountFactors = zeros(N_sim, 1);
-
-% Map Observation Dates to Path Indices (Days)
-ObsIndices = days(ObsDates - ValuationDate); 
-% Ensure indices don't exceed path length (numerical safety)
-ObsIndices = min(ObsIndices, size(S_paths, 2)-1); 
-
-for i = 1:N_sim
-    Path = S_paths(i, :);
-    
-    % A. Check Barrier (Continuous / Daily)
-    % "Barrier Event" = Reference Value < Trigger AND Below Barrier? 
-    % Actually Term sheet says: "Barrier Event has occurred" usually means 
-    % touching the barrier level (90%) at ANY time.
-    % We check if the path ever dropped below 90%.
-    BarrierHit = any(Path < Barrier);
-    
-    % B. Check Autocall (Dates 1 to 5)
-    IsAutocalled = false;
-    
-    for k = 1:5 
-        % Check Spot on Observation Date
-        % Index + 1 because Path includes t=0
-        S_obs = Path(ObsIndices(k) + 1);
-        
-        if S_obs >= Trigger
-            % Autocall Triggered
-            Payoffs(i) = LiqPercs(k) * Notional;
-            
-            % Discount from THIS date
-            T_pay = years(ObsDates(k) - ValuationDate);
-            DiscountFactors(i) = exp(-r_riskfree * T_pay);
-            
-            IsAutocalled = true;
-            break; 
-        end
-    end
-    
-    if IsAutocalled
-        continue; % Done with this path
-    end
-    
-    % C. Final Maturity (Date 6)
-    S_final = Path(end);
-    T_pay = T_final;
-    DiscountFactors(i) = exp(-r_riskfree * T_pay);
-    
-    % Apply Complex Logic from Term Sheet
-    if S_final >= Trigger
-        % Scenario: Above Trigger (120%) at Maturity
-        if BarrierHit
-            % "Reference Value above Trigger Level AND Barrier Event has occurred"
-            Payoffs(i) = 1.10 * Notional;
-        else
-            % "Reference Value above Trigger Level" (Implies No Barrier based on context)
-            % (Liquidation price + Additional final amount)
-            % Liq Price #6 is 120%. Additional is 23%.
-            Payoffs(i) = (1.20 + 0.23) * Notional;
-        end
-        
-    else % S_final < Trigger
-        if ~BarrierHit
-            % "Below Trigger AND Barrier Event has NOT occurred"
-            % Pay Liquidation Price (120%)
-            Payoffs(i) = 1.20 * Notional;
-        else
-            % "Below Trigger AND Barrier Event HAS occurred"
-            % Max(Protection, Factor * (S / Strike))
-            % Protection = 0%, Factor = 90%
-            Val = Factor * (S_final / Strike);
-            Payoffs(i) = max(Protection, Val) * Notional;
-        end
-    end
-end
-
-% --- 6. Calculate Price ---
-PV = Payoffs .* DiscountFactors;
-Price = mean(PV);
-StdErr = std(PV) / sqrt(N_sim);
+% Call the function using the variables returned by your calibration step
+[Price_Cert, StdErr] = Price_Miami_Certificate_Function(optimal_params, S0, r, q, ValuationDate);
 
 fprintf('\n--------------------------------------\n');
-fprintf('MIAMI CROCODILE CERTIFICATE PRICE\n');
+fprintf('MIAMI CROCODILE CERTIFICATE PRICE (DISCRETE BARRIER)\n');
 fprintf('--------------------------------------\n');
 fprintf('Price:       $ %.2f\n', Price);
 fprintf('%% of Notional: %.2f %%\n', (Price/Notional)*100);
 fprintf('Std Error:   $ %.2f\n', StdErr);
 fprintf('--------------------------------------\n');
+
+
+%% RUN_BACKTEST_STRATEGY.m
+% Automates the Hedging Strategy Backtest (Question 6)
+% Dates: 08 Dec (Start), 11 Dec, 12 Dec, 13 Dec. 
+
+% --- 1. CONFIGURATION ---
+Dates = {'2017-12-08', '2017-12-11', '2017-12-12', '2017-12-13'};
+Notional = 15e6; % 15 Million
+Pos_Cert = -1;   % Short Position
+
+% Storage
+PnL_History = [];
+Cash_Account = 0; 
+
+% Portfolio State
+Pos_Underlying = 0; 
+Pos_Put_Option = 0; 
+Current_K = 0; 
+Current_T = 0; 
+
+fprintf('Starting Strategy: SELLING VEGA (Short ATM Puts)...\n');
+
+for t = 1:length(Dates)
+    CurrentDateStr = Dates{t};
+    CurrentDate = datetime(CurrentDateStr);
+    
+    fprintf('\n--- Date: %s ---\n', CurrentDateStr);
+    
+    % 1. CALIBRATE & GET DATA
+    [optimal_params, S0, r, q, fwd, T_curve, ~] = calibrate_for_date(CurrentDateStr);
+    
+    % 2. VALUATION (Mark-to-Model)
+    [Price_Cert, ~] = Price_Miami_Certificate_Function(optimal_params, S0, r, q, CurrentDate);
+    Val_Cert = Pos_Cert * Price_Cert;
+    
+    % Re-price Existing Hedge Option
+    Val_Option = 0;
+    Price_Put_Curr = 0;
+    
+    if Pos_Put_Option ~= 0
+        T_remain = years(Current_T - CurrentDate);
+        if T_remain > 0.005
+            Price_Put_Curr = NIG_Pricer(optimal_params, S0, Current_K, exp(-r*T_remain), T_remain, 2);
+            Val_Option = Pos_Put_Option * Price_Put_Curr;
+        else
+            % Expiry
+            Cash_Account = Cash_Account + Pos_Put_Option * max(Current_K - S0, 0);
+            Pos_Put_Option = 0;
+        end
+    end
+    
+    Val_Stock = Pos_Underlying * S0;
+    
+    % 3. CALCULATE P&L
+    if t > 1
+        dt_days = days(CurrentDate - datetime(Dates{t-1}));
+        Interest = Cash_Account * (r * dt_days/365);
+        Cash_Account = Cash_Account + Interest;
+        
+        Port_Value = Val_Cert + Val_Stock + Val_Option + Cash_Account;
+        Daily_PnL = Port_Value - Prev_Port_Value;
+        PnL_History(end+1) = Daily_PnL;
+        
+        fprintf('   Daily P&L: $ %+.2f\n', Daily_PnL);
+    else
+        Cash_Account = -Val_Cert; % Premium Received
+        Port_Value = 0;
+    end
+    Prev_Port_Value = Port_Value;
+    
+    % 4. CALCULATE RISK (GREEKS)
+    % A. Certificate Risk (The source of Long Vega)
+    [Delta_Cert_Unit, Vega_Cert_Unit] = Calculate_Greeks_NIG(optimal_params, S0, r, q, CurrentDate);
+    
+    Total_Vega_Risk  = Pos_Cert * Vega_Cert_Unit; % Likely Positive (Long Vega)
+    Total_Delta_Risk = Pos_Cert * Delta_Cert_Unit; 
+    
+    fprintf('   Portfolio Vega Exposure: $ %.2f (Need to Sell)\n', Total_Vega_Risk);
+    
+    % B. Hedge Instrument (New 3M ATM Put)
+    T_new = 0.25; 
+    K_new = S0; % ATM for Max Vega
+    Target_Exp = CurrentDate + days(90);
+    
+    [Delta_Put, Vega_Put] = Calculate_Greeks_Vanilla(optimal_params, S0, K_new, r, q, T_new);
+    
+    % 5. EXECUTE STRATEGY: SELL VEGA
+    % We want Net Vega = 0.
+    % Pos_Put * Vega_Put + Total_Vega_Risk = 0
+    % Pos_Put = -Total_Vega_Risk / Vega_Put
+    
+    Target_Pos_Put = -Total_Vega_Risk / Vega_Put;
+    
+    % Since Total_Vega_Risk is likely Positive, Target_Pos_Put will be NEGATIVE.
+    % This confirms we are SELLING options.
+    
+    % 6. DELTA HEDGE (Clean up)
+    % Pos_Stock * 1 + Pos_Put * Delta_Put + Total_Delta_Risk = 0
+    Target_Pos_Stock = -(Total_Delta_Risk + Target_Pos_Put * Delta_Put);
+    
+    % 7. TRADING & CASH UPDATE
+    
+    % Roll Option Position
+    if Pos_Put_Option ~= 0 && (K_new ~= Current_K)
+        % Buy back old puts (Pay Ask)
+        % Approx cost: Mid + Spread
+        Cost_Close = -Pos_Put_Option * Price_Put_Curr; 
+        Cash_Account = Cash_Account - Cost_Close;
+    end
+    
+    % Sell New Puts (Receive Bid)
+    Price_New_Put = NIG_Pricer(optimal_params, S0, K_new, exp(-r*T_new), T_new, 2);
+    Premium_Received = -Target_Pos_Put * Price_New_Put; % Neg * Neg = Pos
+    Cash_Account = Cash_Account + Premium_Received;
+    
+    % Adjust Stock
+    Trade_Stock = Target_Pos_Stock - Pos_Underlying;
+    Cash_Account = Cash_Account - (Trade_Stock * S0);
+    
+    % Update State
+    Pos_Put_Option = Target_Pos_Put;
+    Pos_Underlying = Target_Pos_Stock;
+    Current_K = K_new;
+    Current_T = Target_Exp;
+    
+    fprintf('   Action: Sold %.0f ATM Puts | Net Stock Position: %.0f\n', ...
+        abs(Target_Pos_Put), Pos_Underlying);
+end
+
+% --- METRICS ---
+Metric = mean(PnL_History.^2);
+fprintf('\n========================================\n');
+fprintf('STRATEGY PERFORMANCE\n');
+fprintf('Metric (Mean Squared P&L): %.2f\n', Metric);
+fprintf('Root Mean Square Error:    $ %.2f\n', sqrt(Metric));
+fprintf('========================================\n');
+
+
+%% --- PLOTTING P&L EVOLUTION ---
+%% --- PLOTTING P&L EVOLUTION (BLOOMBERG STYLE) ---
+
+% 1. Prepare Data
+PlotDates = datetime(Dates, 'InputFormat', 'yyyy-MM-dd');
+
+if length(PnL_History) == length(PlotDates) - 1
+    PnL_Aligned = [0, PnL_History];
+    SqPnL_Aligned = [0, PnL_History.^2];
+else
+    PnL_Aligned = PnL_History;
+    SqPnL_Aligned = PnL_History.^2;
+end
+CumPnL = cumsum(PnL_Aligned);
+
+% --- STYLE DEFINITIONS ---
+bbg_black  = [0 0 0];          % Background
+bbg_orange = [1.0 0.6 0.0];    % "Amber" Data Color
+bbg_white  = [1 1 1];          % Text Color
+bbg_grid   = [0.3 0.3 0.3];    % Subtle Grid Lines
+
+% 2. Create Figure
+figure('Name', 'Strategy Performance Analysis', ...
+       'Color', bbg_black, ... % Black Figure Background
+       'Position', [100 100 1000 800], ...
+       'InvertHardcopy', 'off');
+
+% --- Subplot 1: Cumulative P&L ---
+ax1 = subplot(2,1,1);
+set(ax1, 'Color', bbg_black, 'XColor', bbg_white, 'YColor', bbg_white, ...
+    'GridColor', bbg_grid, 'GridAlpha', 0.6); % Axes Styling
+
+hold on;
+plot(PlotDates, CumPnL, '-o', ...
+    'Color', bbg_orange, ...
+    'LineWidth', 2, ...
+    'MarkerSize', 6, ...
+    'MarkerFaceColor', bbg_orange, ...
+    'MarkerEdgeColor', bbg_orange);
+
+yline(0, '--', 'Color', bbg_white, 'LineWidth', 1.5); % White break-even line
+
+title('Cumulative P&L Evolution (Net Wealth)', 'Color', bbg_white);
+ylabel('USD', 'Color', bbg_white);
+grid on;
+grid minor;
+
+% Annotate Final Value (White Text)
+text(PlotDates(end), CumPnL(end), sprintf('  $%.0f', CumPnL(end)), ...
+    'VerticalAlignment', 'bottom', ...
+    'Color', bbg_white, ... 
+    'FontSize', 10, 'FontWeight', 'bold');
+
+% --- Subplot 2: Squared P&L ---
+ax2 = subplot(2,1,2);
+set(ax2, 'Color', bbg_black, 'XColor', bbg_white, 'YColor', bbg_white, ...
+    'GridColor', bbg_grid, 'GridAlpha', 0.6); % Axes Styling
+
+hold on;
+b = bar(PlotDates, SqPnL_Aligned, ...
+    'FaceColor', bbg_orange, ...
+    'EdgeColor', 'none'); 
+
+title('Daily P&L Squared (Contribution to Error Metric)', 'Color', bbg_white);
+ylabel('USD ^2', 'Color', bbg_white);
+grid on;
+
+% Highlight the worst day
+[max_sq_err, idx_max] = max(SqPnL_Aligned);
+text(PlotDates(idx_max), max_sq_err, '  Worst Day', ...
+    'VerticalAlignment', 'bottom', ...
+    'Color', bbg_white, ... % White text for annotation
+    'FontWeight', 'bold');
+
+% --- Global Title ---
+Metric_Plot = mean(PnL_History.^2); 
+sgt = sgtitle(['Strategy Results | RMSE: $' num2str(sqrt(Metric_Plot), '%.2f')], ...
+    'Color', bbg_white, ...
+    'FontSize', 14, 'FontWeight', 'bold');
