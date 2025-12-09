@@ -1,9 +1,11 @@
-function [discount_factors,forward_prices,expiries,TradeDate,Spot,mkt] = IR_curves(current_options_file,spot_file)
+function [discount_factors,forward_prices,expiries,TradeDate,Spot,mkt] = IR_curves(current_options_file,spot_file,tresh_bid_ask,tresh_penny,DK,tresh_volume)
 %IR_CURVES Extracts market data and calibrates Discount Factors/Forward prices.
 
     % 1. Load Data (Requires Full Path)
     % We pass the full path to the extraction function
-    mkt = Option_estraction_hist(current_options_file, spot_file, 0.1, 0.6, 5, 50);
+    
+    
+    mkt = Option_estraction_hist(current_options_file, spot_file,tresh_bid_ask,tresh_penny,DK,tresh_volume);
     
     % 2. Extract Trade Date from Filename
     % First, strip the path to get just the filename (e.g., 'options_2017-06-08.csv')

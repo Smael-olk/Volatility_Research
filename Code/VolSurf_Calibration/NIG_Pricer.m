@@ -8,7 +8,7 @@ function [Price_model] = NIG_Pricer(params, F0, Strikes, B, Dt, flag)
     k     = params(3);
     
     % Fixed parameters
-    alpha = 1/2; 
+    alpha = -1/2; 
     
     % --- CORRECTION HERE ---
     M = 12; % M is the POWER (exponent). N will be 2^12 = 4096 points.

@@ -45,7 +45,8 @@ function [Price, StdErr] = Price_Miami_Certificate_Function(params, S0, r, q, Va
     % Simulation Grid
     N_sim = 100000; 
     N_days = days(FinalDate - ValuationDate); 
-    fprintf('Simulating %d paths with %d daily steps...\n', N_sim, N_days);
+
+    
     
     % --- 3. Run Simulation ---
     % Generate paths using the NIG model

@@ -17,11 +17,11 @@ function  term_structure_evo()
     
     figure('Name', 'Dynamic Term Structure', 'Position', [100 100 1200 600]);
     v = VideoWriter('./Plots/Term_Structure_Animation.avi');
-    v.FrameRate = 7; 
+    v.FrameRate = 2; 
     open(v);
     for j = 1:numFiles
         current_options_file = filelist(j).name;
-        [discounts,forward_prices,expiries,TradeDate,Spot]=IR_curves(current_options_file,spot_file_name); % Discounts and Forward Calibration function
+        [discounts,forward_prices,expiries,TradeDate,Spot]=IR_curves(current_options_file,spot_file_name,0.1, 0.6, 5, 50); % Discounts and Forward Calibration function
         date_cell_array = cellstr(datestr(expiries));
         dates_str = strjoin(date_cell_array, ', ');
         T_years = years(expiries - TradeDate);
@@ -61,7 +61,7 @@ function  term_structure_evo()
             grid on;
             
             axis([0 max(T_years)+0.5 Spot-10 Spot+100]); 
-            ylim([2350,2700])
+            ylim([Spot*0.96,Spot*1.05])
             % Capture the frame for the video
             frame = getframe(gcf);
             writeVideo(v, frame);

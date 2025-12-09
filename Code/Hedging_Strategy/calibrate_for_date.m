@@ -26,7 +26,7 @@ function [optimal_params, S0, r_2y, q_2y, fwd, T_years, Option_data] = calibrate
     current_file_path = fullfile(filelist(1).folder, filelist(1).name);
     
     % Load Curves
-    [discounts, fwd, expiries, TradeDate, Spot, Option_data] = IR_curves(current_file_path, spot_file_name);
+    [discounts, fwd, expiries, TradeDate, Spot, Option_data] = IR_curves(current_file_path, spot_file_name,0.1, 0.6, 5, 50);
     T_years = years(expiries - TradeDate);
     S0 = Spot;
     

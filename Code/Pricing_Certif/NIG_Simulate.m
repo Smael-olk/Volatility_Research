@@ -1,46 +1,79 @@
 function [S_paths, Times] = NIG_Simulate(params, S0, r, q, T, N_steps, N_sim)
-%NIG_SIMULATE Generates S&P 500 paths using NIG increments.
-%   FIXED: Uses small 'a' for CDF calculation and High-Res grid for daily steps.
+%NIG_SIMULATE_WRAPPER
+%   1. Converts your specific [sigma, eta, k] to Canonical [delta, alpha, beta]
+%   2. Runs the simulation using the Subordination method.
+
+    % --- 1. Unpack Your Specific Parameters ---
+    sigma = params(1); % 0.0861
+    eta   = params(2); % 12.4
+    k     = params(3); % 0.543
+
+    % --- 2. Perform the Mapping (Derived from your NIG_Pricer) ---
+    % Beta (Asymmetry) - Note the negative sign and 0.5 shift
+    beta_can = -(eta + 0.5);
+    
+    % Alpha (Steepness) - Derived from the square root argument match
+    alpha_can = sqrt(beta_can^2 + 1 / (k * sigma^2));
+    
+    % Delta (Scale)
+    delta_can = sigma / sqrt(k);
+
+
+
+    % --- 3. Run the Subordination Simulation ---
+    [S_paths, Times] = NIG_Simulate_Subordination(alpha_can, beta_can, delta_can, S0, r, q, T, N_steps, N_sim);
+end
+
+function [S_paths, Times] = NIG_Simulate_Subordination(alpha, beta, delta, S0, r, q, T, N_steps, N_sim)
+%   Standard NIG Simulator using Canonical Parameters [alpha, beta, delta]
 
     dt = T / N_steps;
     Times = linspace(0, T, N_steps + 1);
     
-    sigma = params(1);
-    eta   = params(2);
-    k     = params(3);
+    % Gamma factor (Scaling factor)
+    gamma_val = sqrt(alpha^2 - beta^2);
     
-    % --- 1. Characteristic Function for ONE Step (dt) ---
-    L_fun = @(z) exp(dt / k * (1 - sqrt(1 + 2 * k * z * sigma^2)));
+    % Inverse Gaussian Parameters for the subordinator
+    mu_IG  = delta * dt / gamma_val;
+    lam_IG = (delta * dt)^2; 
+
+    % Martingale Drift Correction
+    % Ensure alpha > |beta+1| for risk-neutral measure existence
+    if alpha <= abs(beta + 1)
+        warning('Risk Neutral Constraint Warning: alpha <= |beta+1|');
+    end
     
-    phi_NIG = @(u) exp(-1i * u * log(L_fun(eta))) .* ...
-                   L_fun((u.^2 + 1i * u * (1 + 2 * eta)) / 2);
+    adj = delta * (gamma_val - sqrt(alpha^2 - (beta + 1)^2));
+    drift_rn = (r - q) - adj;
     
-    % --- 2. Drift Correction ---
-    phi_at_minus_i = phi_NIG(-1i);
-    martingale_correction = (r - q)*dt - log(phi_at_minus_i);
+    Log_Returns = zeros(N_sim, N_steps);
     
-    phi_sim = @(u) exp(1i * u * martingale_correction) .* phi_NIG(u);
+    for i = 1:N_steps
+        % A. Generate Random Time Change (Subordinator Y)
+        Y = random_inverse_gaussian(mu_IG, lam_IG, N_sim);
+        
+        % B. Generate Brownian Motion Z
+        Z = randn(N_sim, 1);
+        
+        % C. Construct NIG Increment
+        dX = drift_rn * dt + beta * Y + sqrt(Y) .* Z;
+        
+        Log_Returns(:, i) = dX;
+    end
     
-    % --- 3. Grid Settings for Daily Simulation ---
-    % Daily returns are small (~1%). We need a fine grid dx (~0.05%).
-    M = 14; 
-    N = 2^M;
-    target_dx = 0.0005; 
-    param = 2 * pi / (N * target_dx); 
-    
-    % --- 4. Generate Random Increments ---
-    a = 1/2; 
-    
-    Total_Samples = N_sim * N_steps;
-    
-    % Generate log-returns
-    X_all = SimulateFromCF(phi_sim, M, param, a, Total_Samples);
-    
-    % Reshape into paths
-    X_matrix = reshape(X_all, [N_sim, N_steps]);
-    
-    % --- 5. Build Paths ---
-    Log_Path = cumsum(X_matrix, 2);
+    Log_Path = cumsum(Log_Returns, 2);
     S_paths = [ones(N_sim, 1)*S0, S0 * exp(Log_Path)];
-    
+end
+
+function x = random_inverse_gaussian(mu, lambda, n)
+%   Efficient Sampler for Inverse Gaussian Distribution
+    nu = randn(n, 1);
+    y = nu.^2;
+    mu2 = mu^2;
+    term1 = (mu2 .* y) / (2 * lambda);
+    term2 = (mu / (2 * lambda)) .* sqrt(4 * mu * lambda .* y + mu2 .* y.^2);
+    x = mu + term1 - term2;
+    u = rand(n, 1);
+    mask = (u > (mu ./ (mu + x)));
+    x(mask) = mu2 ./ x(mask);
 end

@@ -1,11 +1,10 @@
 function plot_nig_parameter_evo()
 % PLOT_NIG_PARAMETER_EVOLUTION Loads calibrated NIG parameters and plots 
 % their evolution over time to visualize stability and breakdown points.
-
     % --- 1. Load Data ---
     try
         % Load the structure containing the Results array
-        NIG_data = load('CalibratedParams.mat');
+        NIG_data = load('./params/CalibratedParams.mat');
         Results = NIG_data.Results;
     catch
         error('Error loading CalibratedParams.mat. Ensure the file exists and contains the "Results" struct.');

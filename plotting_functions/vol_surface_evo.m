@@ -3,10 +3,10 @@ function vol_surface_evo()
 %                from pre-calculated calibration results.
 
     % --- 1. Load Data ---
-    if ~isfile('CalibratedParams.mat')
+    if ~isfile('./params/CalibratedParams.mat')
         error('Results file not found. Run run_calibration.m first.');
     end
-    load('CalibratedParams.mat', 'Results'); 
+    load('./params/CalibratedParams.mat', 'Results'); 
     
     numFiles = length(Results);
     
@@ -25,7 +25,7 @@ function vol_surface_evo()
     % --- HIGH QUALITY VIDEO WRITER SETUP ---
     v = VideoWriter('./Plots/vol_surface_Animation_HQ.avi', 'Motion JPEG AVI'); 
     v.Quality = 99; % High quality
-    v.FrameRate = 4; % 4 frames per second
+    v.FrameRate = 2; % 4 frames per second
     open(v);
     
     disp('Starting Animation Generation...');
@@ -62,7 +62,7 @@ function vol_surface_evo()
             plot_data{i,1} = Dt; % T
             
             % Create Dense Strike Grid (30 points for plotting smoothness)
-            K_dense = linspace(Spot*0.9, Spot*1.13, 50); 
+            K_dense = linspace(Spot*0.85, Spot*1.2, 50); 
             plot_data{i,8} = K_dense; % K_dense
             
             % Calculate Model Prices (Flag 1 for Call)
