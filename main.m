@@ -246,239 +246,58 @@ fprintf('%% of Notional:   %.2f %%\n', (Price_Cert/Notional)*100);
 fprintf('Std Error:       $ %.2f\n', StdErr);
 fprintf('--------------------------------------\n');
 
-
-%% Hedging Strategy 
-% Automates the Hedging Strategy Backtest (Question 6)
-% Dates: 08 Dec (Start), 11 Dec, 12 Dec, 13 Dec. 
+%% Hedging strategy 6 months from 8 june to 08 december 2017.
+% Automates the Hedging Strategy Backtest (6-Month Stress Test)
+% Strategy: Short Risk Reversal (Delta-Vega-Gamma Neutral)
+% Period: 08 June 2017 to 08 Dec 2017
 
 % --- 1. CONFIGURATION ---
-Dates = {'2017-12-08', '2017-12-11', '2017-12-12', '2017-12-13'};
 Results_File = './params/CalibratedParams.mat';
 FinalDate = datetime('09-Dec-2019'); % Product Maturity
+StartDate = datetime('08-Jun-2017');
+EndDate   = datetime('08-Dec-2017');
+Hedging(StartDate,FinalDate)
+%% --- PERFORMANCE EVALUATION ---
 
-% Positions
-Pos_Cert = -1;   % Short the Certificate
-Pos_Underlying = 0; 
-Pos_Put_Option = 0; 
-Cash_Account   = 0; 
+% 1. Calculate Metrics
+% Portfolio Value (Cumulative P&L over time)
+Portfolio_Value = cumsum(PnL_History); 
 
-% Storage
-Prev_Port_Value = 0;
-PnL_History = [];
+% Daily P&L Squared
+PnL_Squared = PnL_History.^2;
 
-% Load Data
-if ~isfile(Results_File), error('File not found'); end
-load(Results_File, 'Results');
-
-fprintf('Starting Strategy: DELTA-VEGA NEUTRAL (Consistent FD Greeks)...\n');
-
-for t = 1:length(Dates)
-    CurrentDateStr = Dates{t};
-    CurrentDate = datetime(CurrentDateStr, 'InputFormat', 'yyyy-MM-dd');
-    
-    % --- 2. GET MARKET DATA ---
-    found_idx = -1;
-    for j = 1:length(Results)
-        if isequal(dateshift(Results(j).Date, 'start', 'day'), ...
-                   dateshift(CurrentDate, 'start', 'day'))
-            found_idx = j; break;
-        end
-    end
-    if found_idx == -1, continue; end
-    
-    DayData = Results(found_idx);
-    params  = DayData.Params; 
-    S0      = DayData.Spot;
-    
-    % Interpolate Rates
-    T_final = years(FinalDate - CurrentDate);
-    r_curve = -log(DayData.Discounts) ./ DayData.T_years;
-    r_riskfree = interp1(DayData.T_years, r_curve, T_final, 'linear', 'extrap');
-    F_2y = interp1(DayData.T_years, DayData.Fwds, T_final, 'linear', 'extrap');
-    q_div = r_riskfree - log(F_2y / S0) / T_final;
-    
-    fprintf('\n--------------------------------------------------\n');
-    fprintf('DATE: %s | S0: %.2f | r: %.2f%% \n', CurrentDateStr, S0, r_riskfree*100);
-    fprintf('--------------------------------------------------\n');
-    
-    % --- 3. VALUATION (Mark-to-Market) ---
-    [Price_Cert, ~] = Price_Miami_Certificate_Function(params, S0, r_riskfree, q_div, CurrentDate);
-    Val_Cert = Pos_Cert * Price_Cert;
-    
-    % Price Existing Hedges
-    Val_Option = 0;
-    if Pos_Put_Option ~= 0
-        T_rem = years(Current_T - CurrentDate);
-        if T_rem > 0.005
-            Price_Put_Curr = NIG_Pricer(params, S0, Current_K, exp(-r_riskfree*T_rem), T_rem, 2); 
-            Val_Option = Pos_Put_Option * Price_Put_Curr;
-        else
-            Payoff = max(Current_K - S0, 0);
-            Cash_Account = Cash_Account + (Pos_Put_Option * Payoff);
-            Pos_Put_Option = 0;
-        end
-    end
-    Val_Stock = Pos_Underlying * S0;
-    
-    % --- 4. CALCULATE P&L ---
-    if t > 1
-        dt_days = days(CurrentDate - datetime(Dates{t-1}, 'InputFormat', 'yyyy-MM-dd'));
-        Interest = Cash_Account * (r_riskfree * dt_days/365);
-        Cash_Account = Cash_Account + Interest;
-        
-        Port_Value = Val_Cert + Val_Stock + Val_Option + Cash_Account;
-        Daily_PnL = Port_Value - Prev_Port_Value;
-        PnL_History(end+1) = Daily_PnL;
-        
-        fprintf('   Daily P&L:         $ %+.2f\n', Daily_PnL);
-    else
-        Cash_Account = -Val_Cert; 
-        Prev_Port_Value = 0; 
-    end
-    Prev_Port_Value = Val_Cert + Val_Stock + Val_Option + Cash_Account;
-    
-    % --- 5. CALCULATE GREEKS (CONSISTENT METHOD) ---
-    dS = S0 * 0.005; dVol = params(1) * 0.005;
-    
-    % A. Certificate Greeks
-    P_up = Price_Miami_Certificate_Function(params, S0+dS, r_riskfree, q_div, CurrentDate);
-    P_dn = Price_Miami_Certificate_Function(params, S0-dS, r_riskfree, q_div, CurrentDate);
-    Delta_Cert = (P_up - P_dn) / (2*dS);
-    
-    p_up = params; p_up(1) = params(1) + dVol;
-    p_dn = params; p_dn(1) = params(1) - dVol;
-    P_v_up = Price_Miami_Certificate_Function(p_up, S0, r_riskfree, q_div, CurrentDate);
-    P_v_dn = Price_Miami_Certificate_Function(p_dn, S0, r_riskfree, q_div, CurrentDate);
-    Vega_Cert = (P_v_up - P_v_dn) / (2*dVol);
-    
-    Total_Vega_Risk  = Pos_Cert * Vega_Cert;   % Your SHORT position risk
-    Total_Delta_Risk = Pos_Cert * Delta_Cert;
-    
-    fprintf('   [Risk] Cert (Short): Delta %+.0f | Vega %+.0f\n', Total_Delta_Risk, Total_Vega_Risk);
-    
-    % --- 6. HEDGE INSTRUMENT GREEKS ---
-    T_new = 0.25; K_new = S0; Target_Exp = CurrentDate + days(90);
-    
-    % Put Greeks
-    Put_up = NIG_Pricer(params, S0+dS, K_new, exp(-r_riskfree*T_new), T_new, 2);
-    Put_dn = NIG_Pricer(params, S0-dS, K_new, exp(-r_riskfree*T_new), T_new, 2);
-    Delta_Put = (Put_up - Put_dn) / (2*dS);
-    
-    Put_v_up = NIG_Pricer(p_up, S0, K_new, exp(-r_riskfree*T_new), T_new, 2);
-    Put_v_dn = NIG_Pricer(p_dn, S0, K_new, exp(-r_riskfree*T_new), T_new, 2);
-    Vega_Put = (Put_v_up - Put_v_dn) / (2*dVol);
-    
-    % --- 7. SOLVE SYSTEM ---
-    Target_Pos_Put = -Total_Vega_Risk / Vega_Put;
-    Target_Pos_Stock = -(Total_Delta_Risk + Target_Pos_Put * Delta_Put);
-    
-    % --- 8. VERIFICATION & DISPLAY ---
-    % Calculate Risk of the Hedges
-    Hedge_Delta = (Target_Pos_Stock * 1) + (Target_Pos_Put * Delta_Put);
-    Hedge_Vega  = (Target_Pos_Put * Vega_Put);
-    
-    % Calculate Net Position (Should be ~0)
-    Net_Delta = Total_Delta_Risk + Hedge_Delta;
-    Net_Vega  = Total_Vega_Risk + Hedge_Vega;
-    
-    fprintf('   [Hedge] Allocation:  %.0f Puts    | %.0f Stock\n', Target_Pos_Put, Target_Pos_Stock);
-    fprintf('   [Net]   Post-Hedge:  Delta %+.2f  | Vega %+.2f  <-- (Target: 0)\n', Net_Delta, Net_Vega);
-    
-    % --- 9. EXECUTE ---
-    if Pos_Put_Option ~= 0
-        Cost_Close = -Pos_Put_Option * Price_Put_Curr; 
-        Cash_Account = Cash_Account - Cost_Close;
-    end
-    
-    Price_New_Put = NIG_Pricer(params, S0, K_new, exp(-r_riskfree*T_new), T_new, 2);
-    Cost_Open = Target_Pos_Put * Price_New_Put;
-    Cash_Account = Cash_Account - Cost_Open;
-    
-    Trade_Stock = Target_Pos_Stock - Pos_Underlying;
-    Cash_Account = Cash_Account - (Trade_Stock * S0);
-    
-    Pos_Put_Option = Target_Pos_Put;
-    Pos_Underlying = Target_Pos_Stock;
-    Current_K = K_new;
-    Current_T = Target_Exp;
-end
-fprintf('\nFinal P&L (Mean Squared Error): %.4f\n', mean(PnL_History.^2));
-
-%% --- PLOTTING P&L EVOLUTION (BLOOMBERG STYLE) ---
-
-% 1. Prepare Data
-PlotDates = datetime(Dates, 'InputFormat', 'yyyy-MM-dd');
-
-if length(PnL_History) == length(PlotDates) - 1
-    PnL_Aligned = [0, PnL_History];
-    SqPnL_Aligned = [0, PnL_History.^2];
-else
-    PnL_Aligned = PnL_History;
-    SqPnL_Aligned = PnL_History.^2;
-end
-CumPnL = cumsum(PnL_Aligned);
-
-% --- STYLE DEFINITIONS ---
-bbg_black  = [0 0 0];          % Background
-bbg_orange = [1.0 0.6 0.0];    % "Amber" Data Color
-bbg_white  = [1 1 1];          % Text Color
-bbg_grid   = [0.3 0.3 0.3];    % Subtle Grid Lines
-
-% 2. Create Figure
-figure('Name', 'Strategy Performance Analysis', ...
-       'Color', bbg_black, ... % Black Figure Background
-       'Position', [100 100 1000 800], ...
-       'InvertHardcopy', 'off');
-
-% --- Subplot 1: Cumulative P&L ---
-ax1 = subplot(2,1,1);
-set(ax1, 'Color', bbg_black, 'XColor', bbg_white, 'YColor', bbg_white, ...
-    'GridColor', bbg_grid, 'GridAlpha', 0.6); % Axes Styling
-
-hold on;
-plot(PlotDates, CumPnL, '-o', ...
-    'Color', bbg_orange, ...
-    'LineWidth', 2, ...
-    'MarkerSize', 6, ...
-    'MarkerFaceColor', bbg_orange, ...
-    'MarkerEdgeColor', bbg_orange);
-
-yline(0, '--', 'Color', bbg_white, 'LineWidth', 1.5); % White break-even line
-
-title('Cumulative P&L Evolution (Net Wealth)', 'Color', bbg_white);
-ylabel('USD', 'Color', bbg_white);
-grid on;
-grid minor;
-
-% Annotate Final Value (White Text)
-text(PlotDates(end), CumPnL(end), sprintf('  $%.0f', CumPnL(end)), ...
-    'VerticalAlignment', 'bottom', ...
-    'Color', bbg_white, ... 
-    'FontSize', 10, 'FontWeight', 'bold');
-
-% --- Subplot 2: Squared P&L ---
-ax2 = subplot(2,1,2);
-set(ax2, 'Color', bbg_black, 'XColor', bbg_white, 'YColor', bbg_white, ...
-    'GridColor', bbg_grid, 'GridAlpha', 0.6); % Axes Styling
-
-hold on;
-b = bar(PlotDates, SqPnL_Aligned, ...
-    'FaceColor', bbg_orange, ...
-    'EdgeColor', 'none'); 
-
-title('Daily P&L Squared (Contribution to Error Metric)', 'Color', bbg_white);
-ylabel('USD ^2', 'Color', bbg_white);
+% PERFORMANCE METRIC: Mean Squared Error (1/T * Sum(PnL^2))
+% This is the specific metric requested to determine the "winner"
+% Summary Stats
+MSE = mean(PnL_History.^2);
+Cum_PnL = sum(PnL_History);
+fprintf('\n--------------------------------------------------\n');
+fprintf('BACKTEST COMPLETE\n');
+fprintf('Cumulative P&L: $%.2f\n', Cum_PnL);
+fprintf('Mean Squared Error (MSE): %.4f\n', MSE);
+% Optional: Plot P&L
+bbg_orange = [1.0 0.6 0.0];
+figure; plot(Dates_History, PnL_History,'color',bbg_orange); 
+title('Daily Hedging P&L (June - Dec)'); xlabel('Date'); ylabel('P&L ($)');
 grid on;
 
-% Highlight the worst day
-[max_sq_err, idx_max] = max(SqPnL_Aligned);
-text(PlotDates(idx_max), max_sq_err, '  Worst Day', ...
-    'VerticalAlignment', 'bottom', ...
-    'Color', bbg_white, ... % White text for annotation
-    'FontWeight', 'bold');
+%% Hedging 11 december to 13 december 2017
+% --- 1. CONFIGURATION ---
 
-% --- Global Title ---
-Metric_Plot = mean(PnL_History.^2); 
-sgt = sgtitle(['Strategy Results | RMSE: $' num2str(sqrt(Metric_Plot), '%.2f')], ...
-    'Color', bbg_white, ...
-    'FontSize', 14, 'FontWeight', 'bold');
+FinalDate = datetime('09-Dec-2019'); % Product Maturity
+StartDate = datetime('08-Dec-2017');
+EndDate   = datetime('13-Dec-2017');
+Hedging(StartDate,EndDate,FinalDate);
+%%
+% Summary Stats
+MSE = mean(PnL_History.^2);
+Cum_PnL = sum(PnL_History);
+fprintf('\n--------------------------------------------------\n');
+fprintf('BACKTEST COMPLETE\n');
+fprintf('Cumulative P&L: $%.2f\n', Cum_PnL);
+fprintf('Mean Squared Error (MSE): %.4f\n', MSE);
+% Optional: Plot P&L
+bbg_orange = [1.0 0.6 0.0];
+figure; plot(Dates_History, PnL_History,'color',bbg_orange); 
+title('Daily Hedging P&L (June - Dec)'); xlabel('Date'); ylabel('P&L ($)');
+grid on;

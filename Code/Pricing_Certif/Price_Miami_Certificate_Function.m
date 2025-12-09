@@ -43,7 +43,7 @@ function [Price, StdErr] = Price_Miami_Certificate_Function(params, S0, r, q, Va
     end
 
     % Simulation Grid
-    N_sim = 100000; 
+    N_sim = 10000; 
     N_days = days(FinalDate - ValuationDate); 
 
     
